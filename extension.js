@@ -113,67 +113,84 @@ export default class InkSmokeEffectExtension extends Extension {
             }
         });
 
-        // (map) handler is defined once later with additional filtering; avoid duplicate connects
+        // Handle new window map (open/reopen) with a reverse materialize effect when enabled
+        this._mapId = global.window_manager.connect('map', (_wm, actor) => {
+            try {
+                try { _safeLog('pixel-dissolve-ink: map event ' + _safeActorName(actor)); } catch {}
+                if (Main.overview.visible) return;
+
+                const doReverse = !!this.settingsData?.REVERSE_ON_RESTORE?.get?.();
+                if (!doReverse) return;
+
+                // simple cooldown to avoid back-to-back duplicate starts
+                try {
+                    const now = Date.now();
+                    if (actor[LAST_START_TS] && (now - actor[LAST_START_TS]) < START_COOLDOWN_MS)
+                        return;
+                    actor[LAST_START_TS] = now;
+                } catch {}
+
+                if (actor[ACTOR_FLAG]) return;
+
+                const startEffect = () => {
+                    try {
+                        // cancel opposite-phase minimize overlay
+                        try {
+                            const eOpp = actor.get_effect && actor.get_effect(MINIMIZE_EFFECT_NAME);
+                            if (eOpp) {
+                                try { eOpp.cancelEarly?.(actor); } catch { try { actor.remove_effect(eOpp); } catch { try { eOpp.destroy?.(); } catch {} } }
+                            }
+                        } catch {}
+                        // clear same-phase overlay if left over
+                        try {
+                            const eSame = actor.get_effect && actor.get_effect(UNMINIMIZE_EFFECT_NAME);
+                            if (eSame && eSame.get_actor && eSame.get_actor() === actor) {
+                                try { eSame.cancelEarly?.(actor); } catch { try { actor.remove_effect(eSame); } catch { try { eSame.destroy?.(); } catch {} } }
+                            }
+                        } catch {}
+
+                        if (SAFE_MODE) {
+                            if (DEBUG) _safeLog('pixel-dissolve-ink: SAFE_MODE - skipping map reverse effect');
+                            return;
+                        }
+
+                        actor.add_effect_with_name(UNMINIMIZE_EFFECT_NAME,
+                            new SmokeInkOverlayEffect({ settingsData: this.settingsData, reverse: true }));
+                    } catch (e) {
+                        if (DEBUG) _safeLog('pixel-dissolve-ink: add_effect_with_name failed in map handler: ' + e);
+                    }
+                };
+
+                // Defer to idle so the actor is realized/allocated before cloning
+                try {
+                    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => { startEffect(); return GLib.SOURCE_REMOVE; });
+                } catch {
+                    startEffect();
+                }
+            } catch (e) {
+                if (DEBUG) _safeLog('pixel-dissolve-ink: map handler error: ' + e);
+            }
+        });
 
         this._unminimizeId = global.window_manager.connect('unminimize', (_wm, actor) => {
             try {
                 // Always log event occurrence to aid diagnosis (not gated by DEBUG)
                 try { _safeLog('pixel-dissolve-ink: unminimize event ' + _safeActorName(actor)); } catch (e) { }
                 if (DEBUG) _safeLog('pixel-dissolve-ink: unminimize signal received for actor ' + _safeActorName(actor));
-                if (Main.overview.visible) {
-                    return;
-                }
-                // Respect user setting for reverse-on-restore
-                try {
-                    const doReverse = this.settingsData?.REVERSE_ON_RESTORE?.get?.();
-                    if (doReverse === false) return;
-                } catch {}
-                // Cancel any running opposite-phase effect so we can switch smoothly
-                try {
-                    const eOpp = actor.get_effect && actor.get_effect(MINIMIZE_EFFECT_NAME);
-                    if (eOpp) {
-                        try { eOpp.cancelEarly?.(actor); } catch { try { actor.remove_effect(eOpp); } catch { try { eOpp.destroy?.(); } catch {} } }
-                    }
-                } catch {}
-                // Clear any previous unminimize overlay of the same name
-                try {
-                    const e = actor.get_effect && actor.get_effect(UNMINIMIZE_EFFECT_NAME);
-                    if (e && e.get_actor && e.get_actor() === actor) {
-                        try { e.cancelEarly?.(actor); } catch { try { actor.remove_effect(e); } catch (e2) { try { e.destroy?.(); } catch (_) {} } }
-                    }
-                } catch (_) {}
-                try { actor[ACTOR_FLAG] = false; } catch {}
-                if (SAFE_MODE) {
-                    if (DEBUG) _safeLog('pixel-dissolve-ink: SAFE_MODE - skipping unminimize effect');
-                } else {
-                    try {
-                        // Add overlay effect; let WM handle unminimize accounting
-                        actor.add_effect_with_name(UNMINIMIZE_EFFECT_NAME,
-                            new SmokeInkOverlayEffect({ settingsData: this.settingsData, reverse: true }));
-                    } catch (e) {
-                        if (DEBUG) _safeLog('pixel-dissolve-ink: add_effect_with_name failed in unminimize handler: ' + e);
-                    }
-                }
-            } catch (e) {
-                if (DEBUG) _safeLog('pixel-dissolve-ink: unminimize handler error: ' + e);
-            }
-        });
-
-        // Single map handler (open/reopen): play reverse overlay with strong guards
-        this._mapId = global.window_manager.connect('map', (_wm, actor) => {
-            try {
-                if (!actor || actor === null) return;
-                // guard against disposed actors
-                if (!actor.get_stage || !actor.get_stage()) return;
                 if (Main.overview.visible) return;
-                try { _safeLog('pixel-dissolve-ink: map event ' + _safeActorName(actor)); } catch {}
+
                 // Respect user setting for reverse-on-restore
+                const doReverse = !!this.settingsData?.REVERSE_ON_RESTORE?.get?.();
+                if (!doReverse) return;
+
+                // simple cooldown to avoid back-to-back duplicate starts
                 try {
-                    const doReverse = this.settingsData?.REVERSE_ON_RESTORE?.get?.();
-                    if (doReverse === false) return;
+                    const now = Date.now();
+                    if (actor[LAST_START_TS] && (now - actor[LAST_START_TS]) < START_COOLDOWN_MS)
+                        return;
+                    actor[LAST_START_TS] = now;
                 } catch {}
-                const mw = actor.get_meta_window?.();
-                if (!mw) return;
+
                 // ignore if already animating
                 if (actor[ACTOR_FLAG]) return;
 
@@ -190,19 +207,19 @@ export default class InkSmokeEffectExtension extends Extension {
                         try { eSame.cancelEarly?.(actor); } catch { try { actor.remove_effect(eSame); } catch { try { eSame.destroy?.(); } catch {} } }
                     }
                 } catch {}
-                try { actor[ACTOR_FLAG] = false; } catch {}
-                // cooldown: only once right before starting
-                try {
-                    const now = Date.now();
-                    if (actor[LAST_START_TS] && (now - actor[LAST_START_TS]) < START_COOLDOWN_MS)
-                        return;
-                    actor[LAST_START_TS] = now;
-                } catch {}
-                if (!SAFE_MODE) {
-                    try { actor.add_effect_with_name(UNMINIMIZE_EFFECT_NAME, new SmokeInkOverlayEffect({ settingsData: this.settingsData, reverse: true })); } catch {}
+
+                if (SAFE_MODE) {
+                    if (DEBUG) _safeLog('pixel-dissolve-ink: SAFE_MODE - skipping unminimize effect');
+                } else {
+                    try {
+                        actor.add_effect_with_name(UNMINIMIZE_EFFECT_NAME,
+                            new SmokeInkOverlayEffect({ settingsData: this.settingsData, reverse: true }));
+                    } catch (e) {
+                        if (DEBUG) _safeLog('pixel-dissolve-ink: add_effect_with_name failed in unminimize handler: ' + e);
+                    }
                 }
             } catch (e) {
-                if (DEBUG) _safeLog('pixel-dissolve-ink: map handler error: ' + e);
+                if (DEBUG) _safeLog('pixel-dissolve-ink: unminimize handler error: ' + e);
             }
         });
     }
@@ -303,7 +320,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         try { if (!actor.get_stage || !actor.get_stage()) return; } catch { return; }
 
         try { actor[ACTOR_FLAG] = true; } catch {}
-        if (this._debug) _safeLog(`vfunc_set_actor reverse=${this.reverse} actor=${_safeActorName(actor)}`);
+    if (this._debug) _safeLog('vfunc_set_actor reverse=' + this.reverse + ' actor=' + _safeActorName(actor));
 
         // if actor gets destroyed during the animation, stop safely
         try {
@@ -417,130 +434,127 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             try {
                 this._shader = new Clutter.ShaderEffect({ shader_type: Clutter.ShaderType.FRAGMENT_SHADER });
                 const style = styleSetting;
-                const src = style === 'pixelate' ? `
-                                        uniform float u_time;
-                                        uniform float u_gate;
-                                        uniform float u_aspect;
-
-                                        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
-
-                                        void main() {
-                                            vec2 uv = cogl_tex_coord_in[0].st;
-                                            float g = clamp(u_gate, 0.0, 1.0);
-
-                                            // block count: start fine, go coarse as g increases
-                                            float k = mix(60.0, 8.0, g);
-                                            vec2 grid = uv * k;
-                                            vec2 cell = floor(grid);
-                                            vec2 p = (floor(grid) + 0.5) / k; // pixel center sampling
-
-                                            // per-block dropout driven by gate
-                                            float r = hash(cell);
-                                            float vis = 1.0 - smoothstep(g - 0.15, g + 0.15, r);
-
-                                            // scanline glitch: tiny x offset per row
-                                            float linePhase = sin(uv.y * 400.0 + u_time * 25.0);
-                                            float xoff = 0.003 * linePhase * g;
-                                            vec2 pxUV = p + vec2(xoff, 0.0);
-                                            vec2 suv = clamp(pxUV, vec2(0.0), vec2(1.0));
-                                            vec4 col = texture2D(cogl_sampler0, suv);
-
-                                            // apply visibility to alpha (decompose out)
-                                            col.a *= vis;
-                                            cogl_color_out = col;
-                                        }
-                                ` : style === 'ripple' ? `
-                                        uniform float u_time;
-                                        uniform float u_gate;
-                                        uniform vec2  u_center;
-                                        uniform float u_aspect;
-                                        void main() {
-                                            vec2 uv = cogl_tex_coord_in[0].st;
-                                            vec2 cuv = uv - u_center;
-                                            cuv.y /= u_aspect;
-                                            float r = length(cuv);
-                                            float wave = sin(30.0 * r - 10.0 * u_time) * 0.008;
-                                            float g = clamp(u_gate, 0.0, 1.0);
-                                            vec2 disp = normalize(cuv) * wave * g;
-                                            vec2 suv = clamp(uv + disp, vec2(0.0), vec2(1.0));
-                                            vec4 col = texture2D(cogl_sampler0, suv);
-                                            cogl_color_out = col;
-                                        }
-                                ` : style === 'wobble' ? `
-                                        uniform float u_time;
-                                        uniform float u_gate;
-                                        uniform float u_aspect;
-                                        void main() {
-                                            vec2 uv = cogl_tex_coord_in[0].st;
-                                            float g = clamp(u_gate, 0.0, 1.0);
-                                            // small jelly-like wobble, fades in with gate
-                                            float w = 0.008 * (1.0);
-                                            vec2 off;
-                                            off.x = sin(uv.y * 30.0 + u_time * 12.0) * w * g;
-                                            off.y = cos(uv.x * 30.0 + u_time * 10.0) * w * g;
-                                            vec4 col = texture2D(cogl_sampler0, uv + off);
-                                            cogl_color_out = col;
-                                        }
-                                ` : style === 'genie' ? `
-                                        uniform float u_time;
-                                        uniform float u_gate;
-                                        void main() {
-                                            vec2 uv = cogl_tex_coord_in[0].st;
-                                            float g = clamp(u_gate, 0.0, 1.0);
-                                            // vertical collapse towards bottom (y=1.0) with slight X pinch near bottom
-                                            float y = uv.y * (1.0 - g) + g; // move scanlines towards bottom
-                                            float pinch = mix(1.0, 0.7, pow(uv.y, 2.0) * g);
-                                            float x = (uv.x - 0.5) * pinch + 0.5;
-                                            vec2 suv = clamp(vec2(x, y), vec2(0.0), vec2(1.0));
-                                            vec4 col = texture2D(cogl_sampler0, suv);
-                                            cogl_color_out = col;
-                                        }
-                                ` : `
-                    uniform float u_time;
-                    uniform float u_intensity;
-                    uniform float u_scale;
-                    uniform float u_gate; // 0 = plein opaque, 1 = fully dissolved
-                    uniform vec2  u_center;
-                    uniform float u_aspect;
-                    uniform float u_edgeSoft;
-
-                    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
-                    float noise(vec2 p){
-                      vec2 i=floor(p), f=fract(p);
-                      float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
-                      vec2 u=f*f*(3.0-2.0*f);
-                      return mix(a,b,u.x) + (c-a)*u.y*(1.0-u.x) + (d-b)*u.x*u.y;
-                    }
-
-                    void main() {
-                      vec2 uv  = cogl_tex_coord_in[0].st;
-                      vec4 col = texture2D(cogl_sampler0, uv);
-                      vec2 cuv = uv - u_center;
-                      cuv.y   /= u_aspect;
-                      float r  = length(cuv);
-
-                      float t = u_time;
-                      float s = u_scale;
-
-                      float n = 0.0;
-                      n += 0.6 * noise(uv * s + t * 0.8);
-                      n += 0.3 * noise(uv * s * 2.3 - t * 1.1);
-                      n += 0.1 * noise(uv * s * 4.7 + t * 1.7);
-
-                      float grow = mix(0.0, 1.2, t);
-                      float rim  = smoothstep(grow - u_edgeSoft, grow, r + n * 0.15);
-
-                      vec3 ink        = vec3(0.0);
-                      vec3 dissolved  = mix(col.rgb, ink, rim * u_intensity);
-                      float dissolvedA = mix(col.a, 0.0, rim);
-
-                      // gate = 0 => image intacte ; gate -> 1 => on montre la version dissoute
-                      vec3 finalRgb = mix(col.rgb, dissolved, clamp(u_gate, 0.0, 1.0));
-                      float finalA  = mix(col.a,  dissolvedA, clamp(u_gate, 0.0, 1.0));
-
-                      cogl_color_out = vec4(finalRgb, finalA);
-                    }
-                `;
+                let src = '';
+                if (style === 'creepy_shake') {
+                    src = [
+                        'uniform float u_time;',
+                        'uniform float u_gate;',
+                        'uniform float u_aspect;',
+                        '',
+                        'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }',
+                        '',
+                        'void main() {',
+                        '  vec2 uv = cogl_tex_coord_in[0].st;',
+                        '  float g = clamp(u_gate, 0.0, 1.0);',
+                        '  float k = mix(80.0, 10.0, g);',
+                        '  vec2 grid = uv * k;',
+                        '  vec2 cell = floor(grid);',
+                        '  vec2 coarse = floor(cell / 6.0);',
+                        '  float h = hash(coarse);',
+                        '  float gw = floor(4.0 + 3.0 * h + 0.0001);',
+                        '  float gh = floor(4.0 + 3.0 * fract(h * 1.37) + 0.0001);',
+                        '  vec2 groupId = floor(cell / vec2(gw, gh));',
+                        '  float r = hash(groupId);',
+                        '  float vis = 1.0 - smoothstep(g - 0.12, g + 0.12, r);',
+                        '  vec2 p = (floor(grid) + 0.5) / k;',
+                        // No time-based offset; keep static sampling to avoid visible shake
+                        '  vec2 suv = clamp(p, vec2(0.0), vec2(1.0));',
+                        '  vec4 col = texture2D(cogl_sampler0, suv);',
+                        '  col.a *= vis;',
+                        '  cogl_color_out = col;',
+                        '}'
+                    ].join('\n');
+                } else if (style === 'ripple') {
+                    src = [
+                        'uniform float u_time;',
+                        'uniform float u_gate;',
+                        'uniform vec2  u_center;',
+                        'uniform float u_aspect;',
+                        'void main() {',
+                        '  vec2 uv = cogl_tex_coord_in[0].st;',
+                        '  vec2 cuv = uv - u_center;',
+                        '  cuv.y /= u_aspect;',
+                        '  float r = length(cuv);',
+                        '  float wave = sin(30.0 * r - 10.0 * u_time) * 0.008;',
+                        '  float g = clamp(u_gate, 0.0, 1.0);',
+                        '  vec2 disp = normalize(cuv) * wave * g;',
+                        '  vec2 suv = clamp(uv + disp, vec2(0.0), vec2(1.0));',
+                        '  vec4 col = texture2D(cogl_sampler0, suv);',
+                        '  cogl_color_out = col;',
+                        '}'
+                    ].join('\n');
+                } else if (style === 'wobble') {
+                    src = [
+                        'uniform float u_time;',
+                        'uniform float u_gate;',
+                        'uniform float u_aspect;',
+                        'void main() {',
+                        '  vec2 uv = cogl_tex_coord_in[0].st;',
+                        '  float g = clamp(u_gate, 0.0, 1.0);',
+                        '  float w = 0.008;',
+                        '  vec2 off;',
+                        '  off.x = sin(uv.y * 30.0 + u_time * 12.0) * w * g;',
+                        '  off.y = cos(uv.x * 30.0 + u_time * 10.0) * w * g;',
+                        '  vec4 col = texture2D(cogl_sampler0, uv + off);',
+                        '  cogl_color_out = col;',
+                        '}'
+                    ].join('\n');
+                } else if (style === 'genie') {
+                    src = [
+                        'uniform float u_time;',
+                        'uniform float u_gate;',
+                        'void main() {',
+                        '  vec2 uv = cogl_tex_coord_in[0].st;',
+                        '  float g = clamp(u_gate, 0.0, 1.0);',
+                        '  float y = uv.y * (1.0 - g) + g;',
+                        '  float pinch = mix(1.0, 0.7, pow(uv.y, 2.0) * g);',
+                        '  float x = (uv.x - 0.5) * pinch + 0.5;',
+                        '  vec2 suv = clamp(vec2(x, y), vec2(0.0), vec2(1.0));',
+                        '  vec4 col = texture2D(cogl_sampler0, suv);',
+                        '  cogl_color_out = col;',
+                        '}'
+                    ].join('\n');
+                } else {
+                    src = [
+                        'uniform float u_time;',
+                        'uniform float u_intensity;',
+                        'uniform float u_scale;',
+                        'uniform float u_gate;',
+                        'uniform vec2  u_center;',
+                        'uniform float u_aspect;',
+                        'uniform float u_edgeSoft;',
+                        '',
+                        'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }',
+                        'float noise(vec2 p){',
+                        '  vec2 i=floor(p), f=fract(p);',
+                        '  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));',
+                        '  vec2 u=f*f*(3.0-2.0*f);',
+                        '  return mix(a,b,u.x) + (c-a)*u.y*(1.0-u.x) + (d-b)*u.x*u.y;',
+                        '}',
+                        '',
+                        'void main() {',
+                        '  vec2 uv  = cogl_tex_coord_in[0].st;',
+                        '  vec4 col = texture2D(cogl_sampler0, uv);',
+                        '  vec2 cuv = uv - u_center;',
+                        '  cuv.y   /= u_aspect;',
+                        '  float r  = length(cuv);',
+                        '  float t = u_time;',
+                        '  float s = u_scale;',
+                        '  float n = 0.0;',
+                        '  n += 0.6 * noise(uv * s + t * 0.8);',
+                        '  n += 0.3 * noise(uv * s * 2.3 - t * 1.1);',
+                        '  n += 0.1 * noise(uv * s * 4.7 + t * 1.7);',
+                        '  float grow = mix(0.0, 1.2, t);',
+                        '  float rim  = smoothstep(grow - u_edgeSoft, grow, r + n * 0.15);',
+                        '  vec3 ink        = vec3(0.0);',
+                        '  vec3 dissolved  = mix(col.rgb, ink, rim * u_intensity);',
+                        '  float dissolvedA = mix(col.a, 0.0, rim);',
+                        '  vec3 finalRgb = mix(col.rgb, dissolved, clamp(u_gate, 0.0, 1.0));',
+                        '  float finalA  = mix(col.a,  dissolvedA, clamp(u_gate, 0.0, 1.0));',
+                        '  cogl_color_out = vec4(finalRgb, finalA);',
+                        '}'
+                    ].join('\n');
+                }
                 this._shader.set_shader_source(src);
                 if (cloneCreated && this._clone?.add_effect) {
                     this._clone.add_effect(this._shader);
@@ -733,6 +747,18 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         const sy = 1.0 - amp * Math.sin(progress * Math.PI * 6.0);
                         target.set_scale?.(sx, sy);
                         target.set_translation?.(0, 0, 0);
+                    } else if (style === 'creepy_shake') {
+                        // finer grid over time on reverse
+                        const k = Math.max(8, Math.round(8.0 + 32.0 * (1.0 - progress)));
+                        try {
+                            const [tx, ty] = actor.get_transformed_position?.() ?? actor.get_position?.() ?? [0,0];
+                            const [aw, ah] = actor.get_transformed_size?.() ?? actor.get_size?.() ?? [0,0];
+                            const sx = Math.max(1, Math.round(aw / k) * k);
+                            const sy = Math.max(1, Math.round(ah / k) * k);
+                            // Keep original position to avoid visible jitter while approximating pixelation via size
+                            target.set_position(tx, ty);
+                            target.set_size(sx, sy);
+                        } catch {}
                     } else {
                         target.set_scale?.(1.0, 1.0);
                         target.set_translation?.(0, 0, 0);
@@ -761,6 +787,20 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
                         const dy = driftPx * eased;
                         try { target.set_translation(0, dy, 0); } catch {}
+                    } else if (style === 'pixelate') {
+                        // coarse grid as we fade out; avoid snapping position to prevent shake
+                        const k = Math.max(8, Math.round(10.0 + 30.0 * eased));
+                        try {
+                            const [tx, ty] = actor.get_transformed_position?.() ?? actor.get_position?.() ?? [0,0];
+                            const [aw, ah] = actor.get_transformed_size?.() ?? actor.get_size?.() ?? [0,0];
+                            const sx = Math.max(1, Math.round(aw / k) * k);
+                            const sy = Math.max(1, Math.round(ah / k) * k);
+                            target.set_position(tx, ty);
+                            target.set_size(sx, sy);
+                        } catch {}
+                        const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                        const dy = driftPx * eased;
+                        try { target.set_translation(0, dy, 0); } catch {}
                     } else {
                         const scaleVal = 1.0 - (1.0 - shrinkMin) * eased;
                         target.set_scale?.(scaleVal, scaleVal);
@@ -777,7 +817,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
     }
 
     _finish(actor) {
-        if (this._debug) _safeLog(`_finish reverse=${this.reverse} actor=${_safeActorName(actor)}`);
+    if (this._debug) _safeLog('_finish reverse=' + this.reverse + ' actor=' + _safeActorName(actor));
         // guard disposed
         try { if (!actor || !actor.get_stage || !actor.get_stage()) { this.cancelEarly?.(actor); return; } } catch { return; }
 
