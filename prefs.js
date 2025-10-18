@@ -52,6 +52,10 @@ export default class Prefs extends ExtensionPreferences {
     styleDrop.connect('notify::selected', () => {
       const name = invStyleMap[styleDrop.get_selected()] ?? 'ink';
       data.STYLE.set(name);
+      // Hide Ink-only advanced controls when not using Ink, to simplify UX
+      const isInk = name === 'ink';
+      scaleRow.set_visible(isInk);
+      intensRow.set_visible(isInk);
     });
     styleRow.add_suffix(styleDrop);
     gTop.add(styleRow);
@@ -137,6 +141,13 @@ export default class Prefs extends ExtensionPreferences {
     g2.add(holdRow);
 
     page.add(g2);
+    // Initial visibility based on current style
+    try {
+      const cur = data.STYLE.get();
+      const isInk = cur === 'ink';
+      scaleRow.set_visible(isInk);
+      intensRow.set_visible(isInk);
+    } catch (_) {}
 
     // Reset button in header
     const resetBtn = new Gtk.Button({ icon_name: 'edit-clear' });

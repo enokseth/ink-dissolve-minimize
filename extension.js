@@ -166,19 +166,14 @@ export default class InkSmokeEffectExtension extends Extension {
                 // guard against disposed actors
                 if (!actor.get_stage || !actor.get_stage()) return;
                 if (Main.overview.visible) return;
+                try { _safeLog('pixel-dissolve-ink: map event ' + _safeActorName(actor)); } catch {}
                 // Respect user setting for reverse-on-restore
                 try {
                     const doReverse = this.settingsData?.REVERSE_ON_RESTORE?.get?.();
                     if (doReverse === false) return;
                 } catch {}
-                try {
-                    const now = Date.now();
-                    if (actor[LAST_START_TS] && (now - actor[LAST_START_TS]) < START_COOLDOWN_MS)
-                        return;
-                    actor[LAST_START_TS] = now;
-                } catch {}
                 const mw = actor.get_meta_window?.();
-                if (!mw || mw.skip_taskbar || mw.is_skip_taskbar?.()) return;
+                if (!mw) return;
                 // ignore if already animating
                 if (actor[ACTOR_FLAG]) return;
 
@@ -196,7 +191,7 @@ export default class InkSmokeEffectExtension extends Extension {
                     }
                 } catch {}
                 try { actor[ACTOR_FLAG] = false; } catch {}
-                // cooldown
+                // cooldown: only once right before starting
                 try {
                     const now = Date.now();
                     if (actor[LAST_START_TS] && (now - actor[LAST_START_TS]) < START_COOLDOWN_MS)
@@ -400,6 +395,16 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             this._shader = null;
         }
         const styleSetting = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+        // If user disabled shader globally but the selected style requires it to look meaningful,
+        // auto-enable shader for this one animation (do not persist setting).
+        try {
+            if (!this._useShader && (styleSetting === 'ink' || styleSetting === 'pixelate' || styleSetting === 'ripple')) {
+                if (Clutter.ShaderEffect && Clutter.ShaderType?.FRAGMENT_SHADER) {
+                    this._useShader = true;
+                }
+            }
+        } catch {}
+
         // Adjust pivot for 'genie' style (collapse to bottom)
         try {
             if (styleSetting === 'genie' && this._clone) {
@@ -413,21 +418,37 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                 this._shader = new Clutter.ShaderEffect({ shader_type: Clutter.ShaderType.FRAGMENT_SHADER });
                 const style = styleSetting;
                 const src = style === 'pixelate' ? `
-                                        uniform sampler2D tex;
                                         uniform float u_time;
                                         uniform float u_gate;
                                         uniform float u_aspect;
+
+                                        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }
+
                                         void main() {
                                             vec2 uv = cogl_tex_coord_in[0].st;
-                                            float k = mix(40.0, 2.0, clamp(u_time, 0.0, 1.0));
-                                            // gate keeps original until late for reverse
                                             float g = clamp(u_gate, 0.0, 1.0);
-                                            vec2 p = floor(uv * k) / k;
-                                            vec4 col = texture2D(tex, mix(uv, p, g));
+
+                                            // block count: start fine, go coarse as g increases
+                                            float k = mix(60.0, 8.0, g);
+                                            vec2 grid = uv * k;
+                                            vec2 cell = floor(grid);
+                                            vec2 p = (floor(grid) + 0.5) / k; // pixel center sampling
+
+                                            // per-block dropout driven by gate
+                                            float r = hash(cell);
+                                            float vis = 1.0 - smoothstep(g - 0.15, g + 0.15, r);
+
+                                            // scanline glitch: tiny x offset per row
+                                            float linePhase = sin(uv.y * 400.0 + u_time * 25.0);
+                                            float xoff = 0.003 * linePhase * g;
+                                            vec2 pxUV = p + vec2(xoff, 0.0);
+                                            vec4 col = texture2D(cogl_sampler0, clamp(pxUV, 0.0, 1.0));
+
+                                            // apply visibility to alpha (decompose out)
+                                            col.a *= vis;
                                             cogl_color_out = col;
                                         }
                                 ` : style === 'ripple' ? `
-                                        uniform sampler2D tex;
                                         uniform float u_time;
                                         uniform float u_gate;
                                         uniform vec2  u_center;
@@ -440,11 +461,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             float wave = sin(30.0 * r - 10.0 * u_time) * 0.003;
                                             float g = clamp(u_gate, 0.0, 1.0);
                                             vec2 disp = normalize(cuv) * wave * g;
-                                            vec4 col = texture2D(tex, uv + disp);
+                                            vec4 col = texture2D(cogl_sampler0, uv + disp);
                                             cogl_color_out = col;
                                         }
                                 ` : style === 'wobble' ? `
-                                        uniform sampler2D tex;
                                         uniform float u_time;
                                         uniform float u_gate;
                                         uniform float u_aspect;
@@ -456,11 +476,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             vec2 off;
                                             off.x = sin(uv.y * 30.0 + u_time * 12.0) * w * g;
                                             off.y = cos(uv.x * 30.0 + u_time * 10.0) * w * g;
-                                            vec4 col = texture2D(tex, uv + off);
+                                            vec4 col = texture2D(cogl_sampler0, uv + off);
                                             cogl_color_out = col;
                                         }
-                                ` : style === 'genie' ? `
-                                        uniform sampler2D tex;
+                                ` : style === 'ripple' ? `
                                         uniform float u_time;
                                         uniform float u_gate;
                                         void main() {
@@ -470,11 +489,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             float y = uv.y * (1.0 - g) + g; // move scanlines towards bottom
                                             float pinch = mix(1.0, 0.7, pow(uv.y, 2.0) * g);
                                             float x = (uv.x - 0.5) * pinch + 0.5;
-                                            vec4 col = texture2D(tex, vec2(x, y));
-                                            cogl_color_out = col;
+                                            vec4 col = texture2D(cogl_sampler0, vec2(x, y));
+                                            float wave = sin(30.0 * r - 10.0 * u_time) * 0.008;
                                         }
                                 ` : `
-                    uniform sampler2D tex;
                     uniform float u_time;
                     uniform float u_intensity;
                     uniform float u_scale;
@@ -493,7 +511,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
 
                     void main() {
                       vec2 uv  = cogl_tex_coord_in[0].st;
-                      vec4 col = texture2D(tex, uv);
+                      vec4 col = texture2D(cogl_sampler0, uv);
                       vec2 cuv = uv - u_center;
                       cuv.y   /= u_aspect;
                       float r  = length(cuv);
@@ -521,8 +539,12 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                     }
                 `;
                 this._shader.set_shader_source(src);
-                if (cloneCreated && this._clone?.add_effect) this._clone.add_effect(this._shader);
-                else { actor.add_effect(this._shader); this._appliedToActor = true; }
+                if (cloneCreated && this._clone?.add_effect) {
+                    this._clone.add_effect(this._shader);
+                } else {
+                    actor.add_effect(this._shader);
+                    this._appliedToActor = true;
+                }
             } catch (e) {
                 if (this._debug) _safeLog('shader setup failed: ' + e);
                 this._useShader = false;
@@ -582,9 +604,12 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                 if (!this._lastUniformUpdate || now - this._lastUniformUpdate >= 16) {
                     this._lastUniformUpdate = now;
                     const shaderTime = this.reverse ? (1.0 - easedTime) : easedTime;
-                    let gate = 1.0;
+                    let gate = 0.0;
                     if (this.reverse) {
                         gate = (easedTime < HOLD) ? 0.0 : (easedTime - HOLD) / (1 - HOLD);
+                    } else {
+                        // forward/minimize: progress 0..1
+                        gate = easedTime;
                     }
                     try { this._shader.set_uniform_value('u_time',   shaderTime); } catch {}
                     try { this._shader.set_uniform_value('u_gate',   gate);       } catch {}
@@ -783,8 +808,8 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
 
             // aucune restauration d’opacité nécessaire en overlay-only
 
-            // enlever l’effet
-            try { actor.remove_effect(this); } catch {}
+            // enlever l’effet uniquement si encore attaché
+            try { if (this.get_actor && this.get_actor() === actor) actor.remove_effect(this); } catch {}
             try { actor[ACTOR_FLAG] = false; } catch {}
         };
 
@@ -827,7 +852,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                 this._clone = null;
             }
         } catch {}
-        try { actor.remove_effect(this); } catch {}
+        try { if (this.get_actor && this.get_actor() === actor) actor.remove_effect(this); } catch {}
         try { actor[ACTOR_FLAG] = false; } catch {}
     }
 });
