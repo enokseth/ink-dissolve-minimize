@@ -123,6 +123,11 @@ export default class InkSmokeEffectExtension extends Extension {
                 if (Main.overview.visible) {
                     return;
                 }
+                // Respect user setting for reverse-on-restore
+                try {
+                    const doReverse = this.settingsData?.REVERSE_ON_RESTORE?.get?.();
+                    if (doReverse === false) return;
+                } catch {}
                 // Cancel any running opposite-phase effect so we can switch smoothly
                 try {
                     const eOpp = actor.get_effect && actor.get_effect(MINIMIZE_EFFECT_NAME);
@@ -161,6 +166,11 @@ export default class InkSmokeEffectExtension extends Extension {
                 // guard against disposed actors
                 if (!actor.get_stage || !actor.get_stage()) return;
                 if (Main.overview.visible) return;
+                // Respect user setting for reverse-on-restore
+                try {
+                    const doReverse = this.settingsData?.REVERSE_ON_RESTORE?.get?.();
+                    if (doReverse === false) return;
+                } catch {}
                 try {
                     const now = Date.now();
                     if (actor[LAST_START_TS] && (now - actor[LAST_START_TS]) < START_COOLDOWN_MS)
@@ -193,7 +203,7 @@ export default class InkSmokeEffectExtension extends Extension {
                         return;
                     actor[LAST_START_TS] = now;
                 } catch {}
-                if (SAFE_MODE) {
+                if (!SAFE_MODE) {
                     try { actor.add_effect_with_name(UNMINIMIZE_EFFECT_NAME, new SmokeInkOverlayEffect({ settingsData: this.settingsData, reverse: true })); } catch {}
                 }
             } catch (e) {
@@ -343,6 +353,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             this._clone.set_position(ax, ay);
             this._clone.set_size(aw, ah);
             this._clone.set_reactive(false);
+            // pivot defaults to center; some styles override to bottom
             this._clone.set_pivot_point(0.5, 0.5);
             this._clone.set_translation(0, 0, 0);
             try { this._clone.set_anchor_point_from_gravity?.(Clutter.Gravity.CENTER); } catch {}
@@ -388,11 +399,20 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             this._useShader = false;
             this._shader = null;
         }
-                if (this._useShader) {
+        const styleSetting = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+        // Adjust pivot for 'genie' style (collapse to bottom)
+        try {
+            if (styleSetting === 'genie' && this._clone) {
+                this._clone.set_pivot_point(0.5, 1.0);
+                try { this._clone.set_anchor_point_from_gravity?.(Clutter.Gravity.SOUTH); } catch {}
+            }
+        } catch {}
+
+        if (this._useShader) {
             try {
                 this._shader = new Clutter.ShaderEffect({ shader_type: Clutter.ShaderType.FRAGMENT_SHADER });
-                                const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
-                                const src = style === 'pixelate' ? `
+                const style = styleSetting;
+                const src = style === 'pixelate' ? `
                                         uniform sampler2D tex;
                                         uniform float u_time;
                                         uniform float u_gate;
@@ -421,6 +441,36 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             float g = clamp(u_gate, 0.0, 1.0);
                                             vec2 disp = normalize(cuv) * wave * g;
                                             vec4 col = texture2D(tex, uv + disp);
+                                            cogl_color_out = col;
+                                        }
+                                ` : style === 'wobble' ? `
+                                        uniform sampler2D tex;
+                                        uniform float u_time;
+                                        uniform float u_gate;
+                                        uniform float u_aspect;
+                                        void main() {
+                                            vec2 uv = cogl_tex_coord_in[0].st;
+                                            float g = clamp(u_gate, 0.0, 1.0);
+                                            // small jelly-like wobble, fades in with gate
+                                            float w = 0.008 * (1.0);
+                                            vec2 off;
+                                            off.x = sin(uv.y * 30.0 + u_time * 12.0) * w * g;
+                                            off.y = cos(uv.x * 30.0 + u_time * 10.0) * w * g;
+                                            vec4 col = texture2D(tex, uv + off);
+                                            cogl_color_out = col;
+                                        }
+                                ` : style === 'genie' ? `
+                                        uniform sampler2D tex;
+                                        uniform float u_time;
+                                        uniform float u_gate;
+                                        void main() {
+                                            vec2 uv = cogl_tex_coord_in[0].st;
+                                            float g = clamp(u_gate, 0.0, 1.0);
+                                            // vertical collapse towards bottom (y=1.0) with slight X pinch near bottom
+                                            float y = uv.y * (1.0 - g) + g; // move scanlines towards bottom
+                                            float pinch = mix(1.0, 0.7, pow(uv.y, 2.0) * g);
+                                            float x = (uv.x - 0.5) * pinch + 0.5;
+                                            vec4 col = texture2D(tex, vec2(x, y));
                                             cogl_color_out = col;
                                         }
                                 ` : `
@@ -546,11 +596,17 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         try { this._shader.set_uniform_value('u_edgeSoft',  edgeSoft); } catch {}
                     } else if (style === 'ripple') {
                         try { this._shader.set_uniform_value('u_center',    [0.5, 0.80]); } catch {}
+                    } else if (style === 'wobble') {
+                        // no extra uniforms
+                    } else if (style === 'genie') {
+                        // no extra uniforms
                     }
                 }
 
                 const target = this._clone;
                 if (target) {
+                    // if target not realized/allocated yet, skip this frame to avoid warnings
+                    try { if (!target.get_stage || !target.get_stage()) return; } catch {}
                     if (this.reverse) {
                         // en reverse, pas de drift/scale — on colle à l’acteur
                         try {
@@ -559,7 +615,25 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                             if (Number.isFinite(tx) && Number.isFinite(ty)) target.set_position(tx, ty);
                             if (Number.isFinite(aw) && Number.isFinite(ah) && aw > 0 && ah > 0) target.set_size(aw, ah);
                         } catch {}
-                        target.set_scale?.(1.0, 1.0);
+                        // style-specific reverse transforms
+                        const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                        if (style === 'genie') {
+                            // unfold vertically from bottom as gate opens
+                            const HOLD = this._holdRatio;
+                            const tOpen = progress < HOLD ? 0.0 : (progress - HOLD) / (1 - HOLD);
+                            const sy = Math.max(0.001, tOpen);
+                            target.set_scale?.(1.0, sy);
+                            try { target.set_translation(0, 0, 0); } catch {}
+                        } else if (style === 'wobble') {
+                            // small bounce-in
+                            const phase = Math.min(1, Math.max(0, (progress - 0.1) / 0.3));
+                            const amp = 0.03 * (1 - phase);
+                            const sx = 1.0 + amp * Math.sin(progress * Math.PI * 6.0);
+                            const sy = 1.0 - amp * Math.sin(progress * Math.PI * 6.0);
+                            target.set_scale?.(sx, sy);
+                        } else {
+                            target.set_scale?.(1.0, 1.0);
+                        }
                         target.set_translation?.(0, 0, 0);
                         if (overlayAlpha !== null) target.set_opacity?.(overlayAlpha);
 
@@ -569,11 +643,31 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         const easeOutQuad = t => 1 - (1 - t) * (1 - t);
                         const eased = easeOutQuad(progress);
                         const shrinkMin = this.settingsData?.SHRINK_MIN?.get?.() ?? SHRINK_MIN_DEFAULT;
-                        const scaleVal = 1.0 - (1.0 - shrinkMin) * eased;
-                        target.set_scale?.(scaleVal, scaleVal);
-                        const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
-                        const dy = driftPx * eased;
-                        try { target.set_translation(0, dy, 0); } catch {}
+                        const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                        if (style === 'genie') {
+                            // collapse vertically towards bottom
+                            const sx = 1.0 - (1.0 - shrinkMin) * eased;
+                            const sy = Math.max(0.001, 1.0 - eased);
+                            target.set_scale?.(sx, sy);
+                            const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                            const dy = driftPx * eased;
+                            try { target.set_translation(0, dy, 0); } catch {}
+                        } else if (style === 'wobble') {
+                            const base = 1.0 - (1.0 - shrinkMin) * eased;
+                            const amp = 0.04 * (1 - eased);
+                            const sx = base + amp * Math.sin(progress * Math.PI * 8.0);
+                            const sy = base - amp * Math.sin(progress * Math.PI * 8.0);
+                            target.set_scale?.(sx, sy);
+                            const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                            const dy = driftPx * eased;
+                            try { target.set_translation(0, dy, 0); } catch {}
+                        } else {
+                            const scaleVal = 1.0 - (1.0 - shrinkMin) * eased;
+                            target.set_scale?.(scaleVal, scaleVal);
+                            const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                            const dy = driftPx * eased;
+                            try { target.set_translation(0, dy, 0); } catch {}
+                        }
                         // overlay disparaît progressivement (shader le fait déjà via u_gate=1)
                         target.set_opacity?.(Math.max(0, Math.min(255, Math.round((1 - progress) * 255))));
                     }
@@ -583,6 +677,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                 // fallback sans shader : même cross-fade
                 const target = this._clone;
                 if (!target) return;
+                try { if (!target.get_stage || !target.get_stage()) return; } catch {}
 
                 if (this.reverse) {
                     // overlay: hold puis fade (clone seulement)
@@ -594,19 +689,57 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         if (Number.isFinite(tx) && Number.isFinite(ty)) target.set_position(tx, ty);
                         if (Number.isFinite(aw) && Number.isFinite(ah) && aw > 0 && ah > 0) target.set_size(aw, ah);
                     } catch {}
-                    target.set_scale?.(1.0, 1.0);
-                    target.set_translation?.(0, 0, 0);
+                    // style-specific reverse fallback
+                    const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    if (style === 'genie') {
+                        const HOLD = this._holdRatio;
+                        const tOpen = progress < HOLD ? 0.0 : (progress - HOLD) / (1 - HOLD);
+                        const sy = Math.max(0.001, tOpen);
+                        target.set_scale?.(1.0, sy);
+                        target.set_translation?.(0, 0, 0);
+                        try { target.set_pivot_point?.(0.5, 1.0); } catch {}
+                    } else if (style === 'wobble') {
+                        const phase = Math.min(1, Math.max(0, (progress - 0.1) / 0.3));
+                        const amp = 0.03 * (1 - phase);
+                        const sx = 1.0 + amp * Math.sin(progress * Math.PI * 6.0);
+                        const sy = 1.0 - amp * Math.sin(progress * Math.PI * 6.0);
+                        target.set_scale?.(sx, sy);
+                        target.set_translation?.(0, 0, 0);
+                    } else {
+                        target.set_scale?.(1.0, 1.0);
+                        target.set_translation?.(0, 0, 0);
+                    }
 
                 } else {
                     // minimize: shrink + drift + fade overlay
                     const easeOutQuad = t => 1 - (1 - t) * (1 - t);
                     const eased = easeOutQuad(progress);
                     const shrinkMin = this.settingsData?.SHRINK_MIN?.get?.() ?? SHRINK_MIN_DEFAULT;
-                    const scaleVal = 1.0 - (1.0 - shrinkMin) * eased;
-                    target.set_scale?.(scaleVal, scaleVal);
-                    const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
-                    const dy = driftPx * eased;
-                    try { target.set_translation(0, dy, 0); } catch {}
+                    const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    if (style === 'genie') {
+                        const sx = 1.0 - (1.0 - shrinkMin) * eased;
+                        const sy = Math.max(0.001, 1.0 - eased);
+                        target.set_scale?.(sx, sy);
+                        try { target.set_pivot_point?.(0.5, 1.0); } catch {}
+                        const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                        const dy = driftPx * eased;
+                        try { target.set_translation(0, dy, 0); } catch {}
+                    } else if (style === 'wobble') {
+                        const base = 1.0 - (1.0 - shrinkMin) * eased;
+                        const amp = 0.04 * (1 - eased);
+                        const sx = base + amp * Math.sin(progress * Math.PI * 8.0);
+                        const sy = base - amp * Math.sin(progress * Math.PI * 8.0);
+                        target.set_scale?.(sx, sy);
+                        const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                        const dy = driftPx * eased;
+                        try { target.set_translation(0, dy, 0); } catch {}
+                    } else {
+                        const scaleVal = 1.0 - (1.0 - shrinkMin) * eased;
+                        target.set_scale?.(scaleVal, scaleVal);
+                        const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                        const dy = driftPx * eased;
+                        try { target.set_translation(0, dy, 0); } catch {}
+                    }
                     target.set_opacity?.(Math.max(0, Math.min(255, Math.round((1 - progress) * 255))));
                 }
             }
