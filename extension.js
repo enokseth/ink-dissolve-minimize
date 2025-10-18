@@ -290,6 +290,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         this._useShader         = false;
         this._lastUniformUpdate = 0;
         this._usedActorEase     = false;
+    this._actorDestroyed    = false;
 
         // où on commence le cross-fade en reverse (0.0..1.0)
         this._holdRatio         = 0.70;
@@ -307,7 +308,15 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         // if actor gets destroyed during the animation, stop safely
         try {
             this._destroyConn = actor.connect('destroy', () => {
-                try { this.cancelEarly(actor); } catch {}
+                this._actorDestroyed = true;
+                try { this._timeline?.stop?.(); } catch {}
+                // Defer cleanup to idle to avoid races during actor dispose
+                try {
+                    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                        try { this.cancelEarly(actor); } catch {}
+                        return GLib.SOURCE_REMOVE;
+                    });
+                } catch {}
             });
         } catch {}
 
@@ -395,15 +404,6 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             this._shader = null;
         }
         const styleSetting = (this.settingsData?.STYLE?.get?.() ?? 'ink');
-        // If user disabled shader globally but the selected style requires it to look meaningful,
-        // auto-enable shader for this one animation (do not persist setting).
-        try {
-            if (!this._useShader && (styleSetting === 'ink' || styleSetting === 'pixelate' || styleSetting === 'ripple')) {
-                if (Clutter.ShaderEffect && Clutter.ShaderType?.FRAGMENT_SHADER) {
-                    this._useShader = true;
-                }
-            }
-        } catch {}
 
         // Adjust pivot for 'genie' style (collapse to bottom)
         try {
@@ -442,7 +442,8 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             float linePhase = sin(uv.y * 400.0 + u_time * 25.0);
                                             float xoff = 0.003 * linePhase * g;
                                             vec2 pxUV = p + vec2(xoff, 0.0);
-                                            vec4 col = texture2D(cogl_sampler0, clamp(pxUV, 0.0, 1.0));
+                                            vec2 suv = clamp(pxUV, vec2(0.0), vec2(1.0));
+                                            vec4 col = texture2D(cogl_sampler0, suv);
 
                                             // apply visibility to alpha (decompose out)
                                             col.a *= vis;
@@ -458,10 +459,11 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             vec2 cuv = uv - u_center;
                                             cuv.y /= u_aspect;
                                             float r = length(cuv);
-                                            float wave = sin(30.0 * r - 10.0 * u_time) * 0.003;
+                                            float wave = sin(30.0 * r - 10.0 * u_time) * 0.008;
                                             float g = clamp(u_gate, 0.0, 1.0);
                                             vec2 disp = normalize(cuv) * wave * g;
-                                            vec4 col = texture2D(cogl_sampler0, uv + disp);
+                                            vec2 suv = clamp(uv + disp, vec2(0.0), vec2(1.0));
+                                            vec4 col = texture2D(cogl_sampler0, suv);
                                             cogl_color_out = col;
                                         }
                                 ` : style === 'wobble' ? `
@@ -479,7 +481,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             vec4 col = texture2D(cogl_sampler0, uv + off);
                                             cogl_color_out = col;
                                         }
-                                ` : style === 'ripple' ? `
+                                ` : style === 'genie' ? `
                                         uniform float u_time;
                                         uniform float u_gate;
                                         void main() {
@@ -489,8 +491,9 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                                             float y = uv.y * (1.0 - g) + g; // move scanlines towards bottom
                                             float pinch = mix(1.0, 0.7, pow(uv.y, 2.0) * g);
                                             float x = (uv.x - 0.5) * pinch + 0.5;
-                                            vec4 col = texture2D(cogl_sampler0, vec2(x, y));
-                                            float wave = sin(30.0 * r - 10.0 * u_time) * 0.008;
+                                            vec2 suv = clamp(vec2(x, y), vec2(0.0), vec2(1.0));
+                                            vec4 col = texture2D(cogl_sampler0, suv);
+                                            cogl_color_out = col;
                                         }
                                 ` : `
                     uniform float u_time;
@@ -567,7 +570,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         if (!this._timeline) return;
 
     // guard disposed
-    try { if (!actor || !actor.get_stage || !actor.get_stage()) { this.cancelEarly?.(actor); return; } } catch { return; }
+    try { if (!actor || this._actorDestroyed || !actor.get_stage || !actor.get_stage()) { this.cancelEarly?.(actor); return; } } catch { return; }
     const progress = this._timeline.get_progress(); // 0..1
         if (this._usedActorEase) return;
 
