@@ -44,10 +44,10 @@ export default class Prefs extends ExtensionPreferences {
 
     const styleRow = new Adw.ActionRow({ title: 'Style', subtitle: 'Choose a visual effect' });
     const styleStore = new Gtk.StringList();
-    ['Ink', 'Pixelate', 'Ripple'].forEach(it => styleStore.append(it));
+    ['Ink', 'Pixelate', 'Ripple', 'Wobble', 'Genie'].forEach(it => styleStore.append(it));
     const styleDrop = new Gtk.DropDown({ model: styleStore });
-    const styleMap = { 'ink': 0, 'pixelate': 1, 'ripple': 2 };
-    const invStyleMap = ['ink', 'pixelate', 'ripple'];
+    const styleMap = { 'ink': 0, 'pixelate': 1, 'ripple': 2, 'wobble': 3, 'genie': 4 };
+    const invStyleMap = ['ink', 'pixelate', 'ripple', 'wobble', 'genie'];
     styleDrop.set_selected(styleMap[data.STYLE.get()] ?? 0);
     styleDrop.connect('notify::selected', () => {
       const name = invStyleMap[styleDrop.get_selected()] ?? 'ink';
@@ -180,10 +180,10 @@ export default class Prefs extends ExtensionPreferences {
       g2.set_visible(showAdvanced);
     }
     function applyPreset(name, data, widgets) {
-      // presets tuned to look good and be safe
+      // simple, safe presets (minimal knobs)
       let cfg = { dur: 600, scale: 6.0, intens: 1.0, shrink: 0.85, drift: 40 };
-      if (name === 'subtle') cfg = { dur: 450, scale: 5.0, intens: 0.8, shrink: 0.88, drift: 30 };
-      else if (name === 'bold') cfg = { dur: 700, scale: 7.5, intens: 1.4, shrink: 0.82, drift: 55 };
+      if (name === 'subtle') cfg = { dur: 500, scale: 5.5, intens: 0.9, shrink: 0.88, drift: 28 };
+      else if (name === 'bold') cfg = { dur: 750, scale: 7.0, intens: 1.2, shrink: 0.82, drift: 56 };
       data.DURATION.set(cfg.dur);
       data.NOISE_SCALE.set(cfg.scale);
       data.INTENSITY.set(cfg.intens);
@@ -231,19 +231,17 @@ function showPreview(parentWindow, data) {
   const dur = (data && data.DURATION && typeof data.DURATION.get === 'function') ? data.DURATION.get() : 600;
 
   const timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
-    const t = Math.min(1, (Date.now() - start) / dur);
-    // draw a simple circle fading in/out to simulate dissolve
+    // loop
+    const elapsed = (Date.now() - start) % dur;
+    const t = elapsed / dur;
     area.queue_draw();
-    if (t >= 1) {
-      GLib.Source.remove(timeoutId);
-      return GLib.SOURCE_REMOVE;
-    }
     return GLib.SOURCE_CONTINUE;
   });
 
   area.set_draw_func((widget, ctx, width, height) => {
-    const t = Math.min(1, (Date.now() - start) / dur);
-    const eased = 1 - Math.pow(1 - t, 2);
+    const elapsed = (Date.now() - start) % dur;
+    const t = elapsed / dur;
+    const eased = 0.5 * (1 - Math.cos(t * Math.PI * 2));
     // background
     ctx.setSourceRGBA(0.1, 0.1, 0.1, 1.0);
     ctx.rectangle(0, 0, width, height);
@@ -251,8 +249,8 @@ function showPreview(parentWindow, data) {
     // circle
     const cx = width / 2;
     const cy = height / 2;
-    const r = Math.min(width, height) * 0.3 * (1 + eased * 0.5);
-    ctx.setSourceRGBA(0, 0, 0, 1 - eased);
+    const r = Math.min(width, height) * 0.3 * (1 + eased * 0.35);
+    ctx.setSourceRGBA(0, 0, 0, 0.6 + 0.4 * (1 - eased));
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
   });
