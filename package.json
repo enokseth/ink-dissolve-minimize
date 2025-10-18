@@ -1,0 +1,8 @@
+{
+  "name": "pixel-dissolve-ink-tests",
+  "version": "0.0.0",
+  "devDependencies": {
+    "acorn": "^8.0.0"
+  }
+}
+

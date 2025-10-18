@@ -1,0 +1,15 @@
+{
+  "uuid": "pixel-dissolve-ink@enokseth",
+  "name": "Ink Dissolve Minimize",
+  "description": "Minimize effect: black ink/smoke dissolve (Wayland/X11).",
+   "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49"
+  ],
+  "version": 22,
+  "url": "https://github.com/enokseth/pixel-dissolve-ink",
+  "settings-schema": "org.gnome.shell.extensions.pixel-dissolve-ink"
+}

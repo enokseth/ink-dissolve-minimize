@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.pixel-dissolve-ink"
+          path="/org/gnome/shell/extensions/pixel-dissolve-ink/">
+    <key name="duration-ms" type="i">
+      <default>600</default>
+      <summary>Duration in milliseconds</summary>
+      <description>Animation duration for minimize/unminimize.</description>
+    </key>
+    <key name="noise-scale" type="d">
+      <default>6.0</default>
+      <summary>Noise scale</summary>
+      <description>Spatial frequency of dissolve noise.</description>
+    </key>
+    <key name="intensity" type="d">
+      <default>1.0</default>
+      <summary>Dissolve intensity</summary>
+      <description>How aggressively the ink eats the window (0.5–2.0 typical).</description>
+    </key>
+    <key name="reverse-on-restore" type="b">
+      <default>true</default>
+      <summary>Reverse effect on unminimize</summary>
+      <description>Play an inverted dissolve when restoring the window.</description>
+    </key>
+    <key name="use-shader" type="b">
+      <default>true</default>
+      <summary>Use shader when available</summary>
+      <description>If true the fragment shader is used; otherwise the fallback animated clone is used.</description>
+    </key>
+    <key name="simple-mode" type="b">
+      <default>true</default>
+      <summary>Simple mode (presets)</summary>
+      <description>When enabled, presets drive effect parameters instead of advanced sliders.</description>
+    </key>
+    <key name="preset" type="s">
+      <default>'default'</default>
+      <summary>Selected preset</summary>
+      <description>Preset name: 'subtle', 'default', or 'bold'.</description>
+    </key>
+    <key name="reveal-hold" type="d">
+      <default>0.7</default>
+      <summary>Reveal hold ratio</summary>
+      <description>Proportion of unminimize duration during which overlay stays fully opaque (0.5-0.9 typical).</description>
+    </key>
+    <key name="shrink-min" type="d">
+      <default>0.85</default>
+      <summary>Minimum shrink scale</summary>
+      <description>How small the overlay scales at end of minimize (0.6..0.95 typical).</description>
+    </key>
+    <key name="drift-px" type="i">
+      <default>40</default>
+      <summary>Vertical drift in pixels</summary>
+      <description>How much the overlay drifts vertically during minimize (0..80 typical).</description>
+    </key>
+    <key name="style" type="s">
+      <default>'ink'</default>
+      <summary>Visual effect style</summary>
+      <description>Effect style: 'ink' (smoke/ink), 'pixelate', or 'ripple'.</description>
+    </key>
+  </schema>
+</schemalist>
