@@ -326,6 +326,8 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         try {
             this._destroyConn = actor.connect('destroy', () => {
                 this._actorDestroyed = true;
+                // Avoid later disconnect attempts on a disposed actor
+                this._destroyConn = 0;
                 try { this._timeline?.stop?.(); } catch {}
                 // Defer cleanup to idle to avoid races during actor dispose
                 try {
@@ -423,6 +425,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
     // Read style and normalize historical aliases
     let styleSetting = (this.settingsData?.STYLE?.get?.() ?? 'ink');
     if (styleSetting === 'pixelate') styleSetting = 'creepyshake'; // backward compat
+    if (styleSetting === 'snake') styleSetting = 'pixelsnake';     // alias support
     if (styleSetting === 'twist') styleSetting = 'pixeltwist';     // alias support
 
         // Adjust pivot for 'genie' style (collapse to bottom)
@@ -464,6 +467,31 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         '  vec2 suv = clamp(p, vec2(0.0), vec2(1.0));',
                         '  vec4 col = texture2D(cogl_sampler0, suv);',
                         '  col.a *= vis;',
+                        '  cogl_color_out = col;',
+                        '}'
+                    ].join('\n');
+                } else if (style === 'pixelsnake') {
+                    src = [
+                        'uniform float u_time;',
+                        'uniform float u_gate;',
+                        'uniform float u_aspect;',
+                        '',
+                        'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }',
+                        '',
+                        'void main() {',
+                        '  vec2 uv = cogl_tex_coord_in[0].st;',
+                        '  float g = clamp(u_gate, 0.0, 1.0);',
+                        '  float rows = mix(60.0, 12.0, g);',
+                        '  float row = floor(uv.y * rows);',
+                        '  float rowNorm = row / rows;',
+                        '  float serp = mod(row, 2.0) < 1.0 ? uv.x : 1.0 - uv.x;',
+                        '  float base = g * 1.15 - rowNorm;',
+                        '  float snake = base - serp * 0.18;',
+                        '  float jitter = (hash(vec2(row, floor(uv.x * rows))) - 0.5) * 0.12;',
+                        '  float m = clamp(smoothstep(-0.05, 0.05, snake + jitter), 0.0, 1.0);',
+                        '  vec4 col = texture2D(cogl_sampler0, uv);',
+                        '  col.rgb *= m;',
+                        '  col.a  *= m;',
                         '  cogl_color_out = col;',
                         '}'
                     ].join('\n');
@@ -635,6 +663,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                 // Normalize style and provide aliases on-the-fly
                 let style      = (this.settingsData?.STYLE?.get?.() ?? 'ink');
                 if (style === 'pixelate') style = 'creepyshake';
+                if (style === 'snake') style = 'pixelsnake';
                 if (style === 'twist') style = 'pixeltwist';
                 const intensity  = (this.settingsData?.INTENSITY?.get?.() ?? 1.0);
                 const scaleNoise = (this.settingsData?.NOISE_SCALE?.get?.() ?? 6.0);
@@ -692,6 +721,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         // style-specific reverse transforms
                         let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
                         if (style === 'pixelate') style = 'creepyshake';
+                        if (style === 'snake') style = 'pixelsnake';
                         if (style === 'twist') style = 'pixeltwist';
                         if (style === 'genie') {
                             // unfold vertically from bottom as gate opens
@@ -768,6 +798,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                     // style-specific reverse fallback
                     let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
                     if (style === 'pixelate') style = 'creepyshake';
+                    if (style === 'snake') style = 'pixelsnake';
                     if (style === 'twist') style = 'pixeltwist';
                     if (style === 'genie') {
                         const HOLD = this._holdRatio;
@@ -807,6 +838,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                     const shrinkMin = this.settingsData?.SHRINK_MIN?.get?.() ?? SHRINK_MIN_DEFAULT;
                     let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
                     if (style === 'pixelate') style = 'creepyshake';
+                    if (style === 'snake') style = 'pixelsnake';
                     if (style === 'twist') style = 'pixeltwist';
                     if (style === 'genie') {
                         const sx = 1.0 - (1.0 - shrinkMin) * eased;
@@ -857,7 +889,11 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
     _finish(actor) {
     if (this._debug) _safeLog('_finish reverse=' + this.reverse + ' actor=' + _safeActorName(actor));
         // guard disposed
-        try { if (!actor || !actor.get_stage || !actor.get_stage()) { this.cancelEarly?.(actor); return; } } catch { return; }
+        if (!actor || this._actorDestroyed) {
+            try { this.cancelEarly?.(actor); } catch {}
+            return;
+        }
+        try { if (!actor.get_stage || !actor.get_stage()) { this.cancelEarly?.(actor); return; } } catch { return; }
 
         // stop timeline
         try { this._timeline?.stop?.(); } catch {}
@@ -868,11 +904,13 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         // petit fade de fin sur le clone, puis cleanup
         const END_FADE_MS = 120;
         const doCleanup = () => {
-            try { if (this._destroyConn && actor?.disconnect) actor.disconnect(this._destroyConn); } catch {}
+            try {
+                if (this._destroyConn && actor?.disconnect) actor.disconnect(this._destroyConn);
+            } catch {}
             this._destroyConn = 0;
             // retirer shader si appliqué à l’acteur
             try {
-                if (this._appliedToActor && this._shader) {
+                if (!this._actorDestroyed && this._appliedToActor && this._shader) {
                     try { actor.remove_effect(this._shader); } catch {}
                     this._appliedToActor = false;
                 }
@@ -890,8 +928,11 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             // aucune restauration d’opacité nécessaire en overlay-only
 
             // enlever l’effet uniquement si encore attaché
-            try { if (this.get_actor && this.get_actor() === actor) actor.remove_effect(this); } catch {}
-            try { actor[ACTOR_FLAG] = false; } catch {}
+            try {
+                if (!this._actorDestroyed && this.get_actor && this.get_actor() === actor)
+                    actor.remove_effect(this);
+            } catch {}
+            try { if (!this._actorDestroyed) actor[ACTOR_FLAG] = false; } catch {}
         };
 
         try {
@@ -918,10 +959,13 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         try {
             this._timeline?.stop?.();
         } catch {}
-        try { if (this._destroyConn && actor?.disconnect) actor.disconnect(this._destroyConn); } catch {}
+        try {
+            if (!this._actorDestroyed && this._destroyConn && actor?.disconnect)
+                actor.disconnect(this._destroyConn);
+        } catch {}
         this._destroyConn = 0;
         try {
-            if (this._appliedToActor && this._shader) {
+            if (!this._actorDestroyed && this._appliedToActor && this._shader) {
                 try { actor.remove_effect(this._shader); } catch {}
                 this._appliedToActor = false;
             }
@@ -934,6 +978,6 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             }
         } catch {}
         try { if (this.get_actor && this.get_actor() === actor) actor.remove_effect(this); } catch {}
-        try { actor[ACTOR_FLAG] = false; } catch {}
+        try { if (!this._actorDestroyed) actor[ACTOR_FLAG] = false; } catch {}
     }
 });

@@ -44,11 +44,22 @@ export default class Prefs extends ExtensionPreferences {
 
     const styleRow = new Adw.ActionRow({ title: 'Style', subtitle: 'Choose a visual effect' });
     const styleStore = new Gtk.StringList();
-  ['Ink', 'Creepy Shake', 'Ripple', 'Wobble', 'Genie', 'Pixel Twist'].forEach(it => styleStore.append(it));
+    ['Ink', 'Creepy Shake', 'Pixel Snake', 'Ripple', 'Wobble', 'Genie', 'Pixel Twist'].forEach(it => styleStore.append(it));
     const styleDrop = new Gtk.DropDown({ model: styleStore });
-  // map legacy and new styles; keep backward-compat when reading settings
-  const styleMap = { 'ink': 0, 'pixelate': 1, 'creepyshake': 1, 'ripple': 2, 'wobble': 3, 'genie': 4, 'pixeltwist': 5 };
-  const invStyleMap = ['ink', 'creepyshake', 'ripple', 'wobble', 'genie', 'pixeltwist'];
+    // map legacy and new styles; keep backward-compat when reading settings
+    const styleMap = {
+      'ink': 0,
+      'pixelate': 1,
+      'creepyshake': 1,
+      'pixelsnake': 2,
+      'snake': 2,
+      'ripple': 3,
+      'wobble': 4,
+      'genie': 5,
+      'pixeltwist': 6,
+      'twist': 6,
+    };
+    const invStyleMap = ['ink', 'creepyshake', 'pixelsnake', 'ripple', 'wobble', 'genie', 'pixeltwist'];
     styleDrop.set_selected(styleMap[data.STYLE.get()] ?? 0);
     styleDrop.connect('notify::selected', () => {
   const name = invStyleMap[styleDrop.get_selected()] ?? 'ink';

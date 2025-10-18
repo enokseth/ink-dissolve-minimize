@@ -55,7 +55,7 @@
     <key name="style" type="s">
       <default>'ink'</default>
       <summary>Visual effect style</summary>
-      <description>Effect style: 'ink' (smoke/ink), 'pixelate', or 'ripple'.</description>
+  <description>Effect style: 'ink' (smoke/ink), 'creepyshake' (legacy 'pixelate'), 'pixelsnake', 'ripple', 'wobble', 'genie', or 'pixeltwist'.</description>
     </key>
   </schema>
 </schemalist>
