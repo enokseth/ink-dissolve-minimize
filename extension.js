@@ -420,7 +420,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
             this._useShader = false;
             this._shader = null;
         }
-        const styleSetting = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+    // Read style and normalize historical aliases
+    let styleSetting = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+    if (styleSetting === 'pixelate') styleSetting = 'creepyshake'; // backward compat
+    if (styleSetting === 'twist') styleSetting = 'pixeltwist';     // alias support
 
         // Adjust pivot for 'genie' style (collapse to bottom)
         try {
@@ -435,7 +438,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                 this._shader = new Clutter.ShaderEffect({ shader_type: Clutter.ShaderType.FRAGMENT_SHADER });
                 const style = styleSetting;
                 let src = '';
-                if (style === 'creepy_shake') {
+                if (style === 'creepyshake') {
                     src = [
                         'uniform float u_time;',
                         'uniform float u_gate;',
@@ -461,6 +464,30 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         '  vec2 suv = clamp(p, vec2(0.0), vec2(1.0));',
                         '  vec4 col = texture2D(cogl_sampler0, suv);',
                         '  col.a *= vis;',
+                        '  cogl_color_out = col;',
+                        '}'
+                    ].join('\n');
+                } else if (style === 'pixeltwist') {
+                    // Swirl/twist around center, strength grows with gate and stronger near center
+                    src = [
+                        'uniform float u_time;',
+                        'uniform float u_gate;',
+                        'uniform vec2  u_center;',
+                        'uniform float u_aspect;',
+                        'void main() {',
+                        '  vec2 uv = cogl_tex_coord_in[0].st;',
+                        '  float g = clamp(u_gate, 0.0, 1.0);',
+                        '  vec2 p = uv - u_center;',
+                        '  p.y /= u_aspect;',
+                        '  float r = length(p);',
+                        '  float strength = 2.6; // twist amplitude (radians)',
+                        '  float ang = (1.0 - clamp(r, 0.0, 1.0)) * strength * g;',
+                        '  float s = sin(ang);',
+                        '  float c = cos(ang);',
+                        '  vec2 rp = vec2(c * p.x - s * p.y, s * p.x + c * p.y);',
+                        '  rp.y *= u_aspect;',
+                        '  vec2 suv = clamp(rp + u_center, vec2(0.0), vec2(1.0));',
+                        '  vec4 col = texture2D(cogl_sampler0, suv);',
                         '  cogl_color_out = col;',
                         '}'
                     ].join('\n');
@@ -605,7 +632,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
 
             if (this._shader && this._useShader) {
                 const easedTime  = 0.5 * (1 - Math.cos(progress * Math.PI));
-                const style      = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                // Normalize style and provide aliases on-the-fly
+                let style      = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                if (style === 'pixelate') style = 'creepyshake';
+                if (style === 'twist') style = 'pixeltwist';
                 const intensity  = (this.settingsData?.INTENSITY?.get?.() ?? 1.0);
                 const scaleNoise = (this.settingsData?.NOISE_SCALE?.get?.() ?? 6.0);
                 const edgeSoft   = 0.18;
@@ -638,6 +668,8 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         try { this._shader.set_uniform_value('u_edgeSoft',  edgeSoft); } catch {}
                     } else if (style === 'ripple') {
                         try { this._shader.set_uniform_value('u_center',    [0.5, 0.80]); } catch {}
+                    } else if (style === 'pixeltwist') {
+                        try { this._shader.set_uniform_value('u_center',    [0.5, 0.80]); } catch {}
                     } else if (style === 'wobble') {
                         // no extra uniforms
                     } else if (style === 'genie') {
@@ -658,7 +690,9 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                             if (Number.isFinite(aw) && Number.isFinite(ah) && aw > 0 && ah > 0) target.set_size(aw, ah);
                         } catch {}
                         // style-specific reverse transforms
-                        const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                        let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                        if (style === 'pixelate') style = 'creepyshake';
+                        if (style === 'twist') style = 'pixeltwist';
                         if (style === 'genie') {
                             // unfold vertically from bottom as gate opens
                             const HOLD = this._holdRatio;
@@ -732,7 +766,9 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         if (Number.isFinite(aw) && Number.isFinite(ah) && aw > 0 && ah > 0) target.set_size(aw, ah);
                     } catch {}
                     // style-specific reverse fallback
-                    const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    if (style === 'pixelate') style = 'creepyshake';
+                    if (style === 'twist') style = 'pixeltwist';
                     if (style === 'genie') {
                         const HOLD = this._holdRatio;
                         const tOpen = progress < HOLD ? 0.0 : (progress - HOLD) / (1 - HOLD);
@@ -747,7 +783,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         const sy = 1.0 - amp * Math.sin(progress * Math.PI * 6.0);
                         target.set_scale?.(sx, sy);
                         target.set_translation?.(0, 0, 0);
-                    } else if (style === 'creepy_shake') {
+                    } else if (style === 'creepyshake') {
                         // finer grid over time on reverse
                         const k = Math.max(8, Math.round(8.0 + 32.0 * (1.0 - progress)));
                         try {
@@ -769,7 +805,9 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                     const easeOutQuad = t => 1 - (1 - t) * (1 - t);
                     const eased = easeOutQuad(progress);
                     const shrinkMin = this.settingsData?.SHRINK_MIN?.get?.() ?? SHRINK_MIN_DEFAULT;
-                    const style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    if (style === 'pixelate') style = 'creepyshake';
+                    if (style === 'twist') style = 'pixeltwist';
                     if (style === 'genie') {
                         const sx = 1.0 - (1.0 - shrinkMin) * eased;
                         const sy = Math.max(0.001, 1.0 - eased);
@@ -787,7 +825,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
                         const dy = driftPx * eased;
                         try { target.set_translation(0, dy, 0); } catch {}
-                    } else if (style === 'pixelate') {
+                    } else if (style === 'creepyshake') {
                         // coarse grid as we fade out; avoid snapping position to prevent shake
                         const k = Math.max(8, Math.round(10.0 + 30.0 * eased));
                         try {

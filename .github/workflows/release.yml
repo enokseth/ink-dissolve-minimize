@@ -1,0 +1,55 @@
+name: Build & Release GNOME Extension
+
+on:
+  push:
+    tags:
+      - 'v*'   # ex: v1, v2, v1.2.3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq glib2.0-bin zip
+
+      - name: Extract version from tag
+        id: ver
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME}"       # v1.2.3
+          VER="${RAW_TAG#v}"                 # 1.2.3
+          # EGO attend un entier pour "version". On convertit 1.2.3 -> 10203
+          MAJOR="${VER%%.*}"; REST="${VER#*.}"
+          if [ "$REST" = "$VER" ]; then MIN=0; PATCH=0; else
+            MIN="${REST%%.*}"; PATCH="${REST#*.}"; [ "$PATCH" = "$REST" ] && PATCH=0
+          fi
+          INTVER=$((10#${MAJOR}*10000 + 10#${MIN}*100 + 10#${PATCH}))
+          echo "intver=$INTVER" >> $GITHUB_OUTPUT
+          echo "pretty=$VER"    >> $GITHUB_OUTPUT
+
+      - name: Build zip
+        env:
+          VERSION: ${{ steps.ver.outputs.intver }}
+        run: |
+          make clean
+          make all VERSION=$VERSION
+          ls -lah build
+
+      - name: Find artifact
+        id: artifact
+        run: |
+          FILE=$(ls build/*-v${{ steps.ver.outputs.intver }}.zip)
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release (if not exists) & upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Pixel Dissolve Ink v${{ steps.ver.outputs.pretty }}"
+          draft: false
+          prerelease: false
+          files: ${{ steps.artifact.outputs.file }}
