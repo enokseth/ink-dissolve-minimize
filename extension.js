@@ -424,9 +424,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
         }
     // Read style and normalize historical aliases
     let styleSetting = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+    if (styleSetting === 'ripple') styleSetting = 'ink'; // legacy ripple falls back to ink
     if (styleSetting === 'pixelate') styleSetting = 'creepyshake'; // backward compat
-    if (styleSetting === 'snake') styleSetting = 'pixelsnake';     // alias support
-    if (styleSetting === 'twist') styleSetting = 'pixeltwist';     // alias support
+    if (styleSetting === 'snake' || styleSetting === 'pixel snake') styleSetting = 'pixelsnake';
+    if (styleSetting === 'twist' || styleSetting === 'pixel twist' || styleSetting === 'pixeltwist' || styleSetting === 'twist windows') styleSetting = 'twistwindows';
 
         // Adjust pivot for 'genie' style (collapse to bottom)
         try {
@@ -475,28 +476,49 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         'uniform float u_time;',
                         'uniform float u_gate;',
                         'uniform float u_aspect;',
+                        'uniform float u_direction;',
                         '',
                         'float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123); }',
                         '',
                         'void main() {',
                         '  vec2 uv = cogl_tex_coord_in[0].st;',
-                        '  float g = clamp(u_gate, 0.0, 1.0);',
-                        '  float rows = mix(60.0, 12.0, g);',
-                        '  float row = floor(uv.y * rows);',
-                        '  float rowNorm = row / rows;',
-                        '  float serp = mod(row, 2.0) < 1.0 ? uv.x : 1.0 - uv.x;',
-                        '  float base = g * 1.15 - rowNorm;',
-                        '  float snake = base - serp * 0.18;',
-                        '  float jitter = (hash(vec2(row, floor(uv.x * rows))) - 0.5) * 0.12;',
-                        '  float m = clamp(smoothstep(-0.05, 0.05, snake + jitter), 0.0, 1.0);',
-                        '  vec4 col = texture2D(cogl_sampler0, uv);',
-                        '  col.rgb *= m;',
-                        '  col.a  *= m;',
-                        '  cogl_color_out = col;',
+                        '  float gate = clamp(u_gate, 0.0, 1.0);',
+                        '  float dir = (u_direction >= 0.0) ? 1.0 : -1.0;',
+                        '  float phase = (dir > 0.0) ? gate : (1.0 - gate);',
+                        '  float density = mix(60.0, 150.0, phase);',
+                        '  vec2 grid = vec2(density, density * u_aspect);',
+                        '  vec2 cell = floor(vec2(uv.x * grid.x, uv.y * grid.y));',
+                        '  float seed = hash(cell);',
+                        '  float start = seed;',
+                        '  float activation = clamp(smoothstep(start - 0.08, start + 0.02, phase), 0.0, 1.0);',
+                        '  activation = pow(activation, 0.7);',
+                        '  float progress = clamp((phase - start) / max(0.0001, 1.0 - start), 0.0, 1.0);',
+                        '  progress = pow(progress, 0.75);',
+                        '  vec2 flowDir = normalize(vec2(dir, mix(-0.55, 0.55, hash(cell + vec2(12.9, 4.4)))) + vec2(0.0001, 0.0));',
+                        '  vec2 drift = flowDir * (0.12 + 0.22 * hash(cell + vec2(7.1, 3.7))) * progress;',
+                        '  drift.y /= u_aspect;',
+                        '  float jitter = sin(u_time * (7.0 + 9.0 * hash(cell + vec2(9.9, 1.2))) + seed * 12.57);',
+                        '  vec2 oscillate = vec2(dir * jitter * 0.05 * activation, cos(u_time * (8.0 + 5.0 * seed)) * 0.04 * activation);',
+                        '  oscillate.y /= u_aspect;',
+                        '  vec2 sampleUv = clamp(uv + drift + oscillate, vec2(0.0), vec2(1.0));',
+                        '  vec4 dustSample = texture2D(cogl_sampler0, sampleUv);',
+                        '  vec3 neg = vec3(1.0) - dustSample.rgb;',
+                        '  float spark = 0.5 + 0.5 * sin(u_time * (10.0 + 6.0 * seed) + seed * 6.28318);',
+                        '  vec3 dustColor = mix(dustSample.rgb, neg, 0.85 + 0.15 * clamp(spark, 0.0, 1.0));',
+                        '  vec4 base = texture2D(cogl_sampler0, uv);',
+                        '  float dustMix = activation;',
+                        '  vec3 rgb = mix(base.rgb, dustColor, dustMix);',
+                        '  float alpha = base.a;',
+                        '  if (dir < 0.0) {',
+                        '    float rebuild = gate;',
+                        '    rgb = mix(dustColor, base.rgb, rebuild);',
+                        '    alpha = base.a;',
+                        '  }',
+                        '  cogl_color_out = vec4(rgb, alpha);',
                         '}'
                     ].join('\n');
-                } else if (style === 'pixeltwist') {
-                    // Swirl/twist around center, strength grows with gate and stronger near center
+                } else if (style === 'twistwindows') {
+                    // Paper twist: fold columns while fading like a sheet twisting out of view
                     src = [
                         'uniform float u_time;',
                         'uniform float u_gate;',
@@ -507,34 +529,20 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         '  float g = clamp(u_gate, 0.0, 1.0);',
                         '  vec2 p = uv - u_center;',
                         '  p.y /= u_aspect;',
-                        '  float r = length(p);',
-                        '  float strength = 2.6; // twist amplitude (radians)',
-                        '  float ang = (1.0 - clamp(r, 0.0, 1.0)) * strength * g;',
-                        '  float s = sin(ang);',
-                        '  float c = cos(ang);',
-                        '  vec2 rp = vec2(c * p.x - s * p.y, s * p.x + c * p.y);',
-                        '  rp.y *= u_aspect;',
-                        '  vec2 suv = clamp(rp + u_center, vec2(0.0), vec2(1.0));',
+                        '  float twist = (p.y) * (2.6 + g * 2.6);',
+                        '  float s = sin(twist);',
+                        '  float c = cos(twist);',
+                        '  float taper = mix(1.0, 0.34, g);',
+                        '  float fold = 0.2 * g;',
+                        '  vec2 warped = vec2(p.x * c * taper + s * fold, p.y);',
+                        '  warped.y *= u_aspect;',
+                        '  vec2 suv = clamp(warped + u_center, vec2(0.0), vec2(1.0));',
                         '  vec4 col = texture2D(cogl_sampler0, suv);',
-                        '  cogl_color_out = col;',
-                        '}'
-                    ].join('\n');
-                } else if (style === 'ripple') {
-                    src = [
-                        'uniform float u_time;',
-                        'uniform float u_gate;',
-                        'uniform vec2  u_center;',
-                        'uniform float u_aspect;',
-                        'void main() {',
-                        '  vec2 uv = cogl_tex_coord_in[0].st;',
-                        '  vec2 cuv = uv - u_center;',
-                        '  cuv.y /= u_aspect;',
-                        '  float r = length(cuv);',
-                        '  float wave = sin(30.0 * r - 10.0 * u_time) * 0.008;',
-                        '  float g = clamp(u_gate, 0.0, 1.0);',
-                        '  vec2 disp = normalize(cuv) * wave * g;',
-                        '  vec2 suv = clamp(uv + disp, vec2(0.0), vec2(1.0));',
-                        '  vec4 col = texture2D(cogl_sampler0, suv);',
+                        '  float light = clamp(0.65 + 0.35 * c, 0.45, 1.2);',
+                        '  col.rgb *= light;',
+                        '  float fade = 1.0 - smoothstep(0.75, 1.02, g + length(p) * 0.55);',
+                        '  col.rgb *= fade;',
+                        '  col.a  *= fade;',
                         '  cogl_color_out = col;',
                         '}'
                     ].join('\n');
@@ -662,9 +670,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                 const easedTime  = 0.5 * (1 - Math.cos(progress * Math.PI));
                 // Normalize style and provide aliases on-the-fly
                 let style      = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                if (style === 'ripple') style = 'ink';
                 if (style === 'pixelate') style = 'creepyshake';
-                if (style === 'snake') style = 'pixelsnake';
-                if (style === 'twist') style = 'pixeltwist';
+                if (style === 'snake' || style === 'pixel snake') style = 'pixelsnake';
+                if (style === 'twist' || style === 'pixel twist' || style === 'pixeltwist' || style === 'twist windows') style = 'twistwindows';
                 const intensity  = (this.settingsData?.INTENSITY?.get?.() ?? 1.0);
                 const scaleNoise = (this.settingsData?.NOISE_SCALE?.get?.() ?? 6.0);
                 const edgeSoft   = 0.18;
@@ -695,10 +704,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         try { this._shader.set_uniform_value('u_scale',     scaleNoise); } catch {}
                         try { this._shader.set_uniform_value('u_center',    [0.5, 0.80]); } catch {}
                         try { this._shader.set_uniform_value('u_edgeSoft',  edgeSoft); } catch {}
-                    } else if (style === 'ripple') {
-                        try { this._shader.set_uniform_value('u_center',    [0.5, 0.80]); } catch {}
-                    } else if (style === 'pixeltwist') {
-                        try { this._shader.set_uniform_value('u_center',    [0.5, 0.80]); } catch {}
+                    } else if (style === 'pixelsnake') {
+                        try { this._shader.set_uniform_value('u_direction', this.reverse ? -1.0 : 1.0); } catch {}
+                    } else if (style === 'twistwindows') {
+                        try { this._shader.set_uniform_value('u_center',    [0.5, 0.5]); } catch {}
                     } else if (style === 'wobble') {
                         // no extra uniforms
                     } else if (style === 'genie') {
@@ -720,9 +729,10 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         } catch {}
                         // style-specific reverse transforms
                         let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                        if (style === 'ripple') style = 'ink';
                         if (style === 'pixelate') style = 'creepyshake';
-                        if (style === 'snake') style = 'pixelsnake';
-                        if (style === 'twist') style = 'pixeltwist';
+                        if (style === 'snake' || style === 'pixel snake') style = 'pixelsnake';
+                        if (style === 'twist' || style === 'pixel twist' || style === 'pixeltwist' || style === 'twist windows') style = 'twistwindows';
                         if (style === 'genie') {
                             // unfold vertically from bottom as gate opens
                             const HOLD = this._holdRatio;
@@ -797,10 +807,23 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                     } catch {}
                     // style-specific reverse fallback
                     let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    if (style === 'ripple') style = 'ink';
                     if (style === 'pixelate') style = 'creepyshake';
-                    if (style === 'snake') style = 'pixelsnake';
-                    if (style === 'twist') style = 'pixeltwist';
-                    if (style === 'genie') {
+                    if (style === 'snake' || style === 'pixel snake') style = 'pixelsnake';
+                    if (style === 'twist' || style === 'pixel twist' || style === 'pixeltwist' || style === 'twist windows') style = 'twistwindows';
+                    target.set_rotation_angle?.(Clutter.RotateAxis.X, 0);
+                    target.set_rotation_angle?.(Clutter.RotateAxis.Y, 0);
+                    target.set_rotation_angle?.(Clutter.RotateAxis.Z, 0);
+                    if (style === 'twistwindows') {
+                        const denom = Math.max(0.0001, 1.0 - this._holdRatio);
+                        const unwindPhase = (progress - this._holdRatio) / denom;
+                        const clampedPhase = Math.max(0.0, Math.min(1.0, unwindPhase));
+                        const unwind = 1.0 - clampedPhase;
+                        const ang = unwind * 30.0;
+                        target.set_rotation_angle?.(Clutter.RotateAxis.Y, ang);
+                        target.set_scale?.(1.0, 1.0);
+                        target.set_translation?.(0, 0, 0);
+                    } else if (style === 'genie') {
                         const HOLD = this._holdRatio;
                         const tOpen = progress < HOLD ? 0.0 : (progress - HOLD) / (1 - HOLD);
                         const sy = Math.max(0.001, tOpen);
@@ -827,6 +850,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                             target.set_size(sx, sy);
                         } catch {}
                     } else {
+                        target.set_rotation_angle?.(Clutter.RotateAxis.Y, 0);
                         target.set_scale?.(1.0, 1.0);
                         target.set_translation?.(0, 0, 0);
                     }
@@ -837,10 +861,22 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                     const eased = easeOutQuad(progress);
                     const shrinkMin = this.settingsData?.SHRINK_MIN?.get?.() ?? SHRINK_MIN_DEFAULT;
                     let style = (this.settingsData?.STYLE?.get?.() ?? 'ink');
+                    if (style === 'ripple') style = 'ink';
                     if (style === 'pixelate') style = 'creepyshake';
-                    if (style === 'snake') style = 'pixelsnake';
-                    if (style === 'twist') style = 'pixeltwist';
-                    if (style === 'genie') {
+                    if (style === 'snake' || style === 'pixel snake') style = 'pixelsnake';
+                    if (style === 'twist' || style === 'pixel twist' || style === 'pixeltwist' || style === 'twist windows') style = 'twistwindows';
+                    target.set_rotation_angle?.(Clutter.RotateAxis.X, 0);
+                    target.set_rotation_angle?.(Clutter.RotateAxis.Y, 0);
+                    target.set_rotation_angle?.(Clutter.RotateAxis.Z, 0);
+                    if (style === 'twistwindows') {
+                        const base = 1.0 - (1.0 - shrinkMin) * eased;
+                        const ang = eased * 34.0;
+                        target.set_scale?.(base, base);
+                        target.set_rotation_angle?.(Clutter.RotateAxis.Y, ang);
+                        const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;
+                        const dy = driftPx * eased;
+                        try { target.set_translation(0, dy, 0); } catch {}
+                    } else if (style === 'genie') {
                         const sx = 1.0 - (1.0 - shrinkMin) * eased;
                         const sy = Math.max(0.001, 1.0 - eased);
                         target.set_scale?.(sx, sy);
@@ -872,6 +908,7 @@ const SmokeInkOverlayEffect = GObject.registerClass(class SmokeInkOverlayEffect 
                         const dy = driftPx * eased;
                         try { target.set_translation(0, dy, 0); } catch {}
                     } else {
+                        target.set_rotation_angle?.(Clutter.RotateAxis.Y, 0);
                         const scaleVal = 1.0 - (1.0 - shrinkMin) * eased;
                         target.set_scale?.(scaleVal, scaleVal);
                         const driftPx = this.settingsData?.DRIFT_PX?.get?.() ?? DRIFT_PX_DEFAULT;

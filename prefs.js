@@ -42,9 +42,9 @@ export default class Prefs extends ExtensionPreferences {
     presetRow.add_suffix(presetDrop);
     gTop.add(presetRow);
 
-    const styleRow = new Adw.ActionRow({ title: 'Style', subtitle: 'Choose a visual effect' });
-    const styleStore = new Gtk.StringList();
-    ['Ink', 'Creepy Shake', 'Pixel Snake', 'Ripple', 'Wobble', 'Genie', 'Pixel Twist'].forEach(it => styleStore.append(it));
+  const styleRow = new Adw.ActionRow({ title: 'Style', subtitle: 'Choose a visual effect' });
+  const styleStore = new Gtk.StringList();
+  ['Ink', 'Creepy Shake', 'Pixel Snake', 'Wobble', 'Genie', 'Twist Windows'].forEach(it => styleStore.append(it));
     const styleDrop = new Gtk.DropDown({ model: styleStore });
     // map legacy and new styles; keep backward-compat when reading settings
     const styleMap = {
@@ -53,16 +53,20 @@ export default class Prefs extends ExtensionPreferences {
       'creepyshake': 1,
       'pixelsnake': 2,
       'snake': 2,
-      'ripple': 3,
-      'wobble': 4,
-      'genie': 5,
-      'pixeltwist': 6,
-      'twist': 6,
+      'pixel snake': 2,
+      'wobble': 3,
+      'genie': 4,
+      'twistwindows': 5,
+      'twist windows': 5,
+      'pixeltwist': 5,
+      'twist': 5,
+      'pixel twist': 5,
+      'ripple': 0,
     };
-    const invStyleMap = ['ink', 'creepyshake', 'pixelsnake', 'ripple', 'wobble', 'genie', 'pixeltwist'];
+    const invStyleMap = ['ink', 'creepyshake', 'pixelsnake', 'wobble', 'genie', 'twistwindows'];
     styleDrop.set_selected(styleMap[data.STYLE.get()] ?? 0);
     styleDrop.connect('notify::selected', () => {
-  const name = invStyleMap[styleDrop.get_selected()] ?? 'ink';
+      const name = invStyleMap[styleDrop.get_selected()] ?? 'ink';
       data.STYLE.set(name);
       // Hide Ink-only advanced controls when not using Ink, to simplify UX
       const isInk = name === 'ink';
@@ -159,7 +163,7 @@ export default class Prefs extends ExtensionPreferences {
       const isInk = cur === 'ink';
       scaleRow.set_visible(isInk);
       intensRow.set_visible(isInk);
-    } catch (_) {}
+    } catch (_) { }
 
     // Reset button in header
     const resetBtn = new Gtk.Button({ icon_name: 'edit-clear' });

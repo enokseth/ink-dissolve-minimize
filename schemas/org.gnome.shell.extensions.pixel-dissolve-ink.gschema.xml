@@ -55,7 +55,7 @@
     <key name="style" type="s">
       <default>'ink'</default>
       <summary>Visual effect style</summary>
-  <description>Effect style: 'ink' (smoke/ink), 'creepyshake' (legacy 'pixelate'), 'pixelsnake', 'ripple', 'wobble', 'genie', or 'pixeltwist'.</description>
+  <description>Effect style: 'ink' (smoke/ink), 'creepyshake' (legacy 'pixelate'), 'pixelsnake', 'wobble', 'genie', or 'twistwindows' (Twist Windows paper fold; legacy keys 'pixeltwist' and 'ripple' now map to 'twistwindows' and 'ink' respectively).</description>
     </key>
   </schema>
 </schemalist>
